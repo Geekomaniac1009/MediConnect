@@ -28,6 +28,41 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/tvChatTitle" />
 
+    <LinearLayout
+        android:id="@+id/actionRow"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/languageSpinner">
+
+        <Button
+            android:id="@+id/btnRunTriage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Run Triage" />
+
+        <Button
+            android:id="@+id/btnVoiceAsk"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="Voice Ask" />
+
+        <Button
+            android:id="@+id/btnGuidedVitals"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="Guided Vitals" />
+    </LinearLayout>
+
     <ScrollView
         android:id="@+id/chatScrollView"
         android:layout_width="0dp"
@@ -37,7 +72,7 @@
         app:layout_constraintBottom_toTopOf="@id/inputLayout"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/languageSpinner">
+        app:layout_constraintTop_toBottomOf="@id/actionRow">
 
         <LinearLayout
             android:id="@+id/chatContainer"

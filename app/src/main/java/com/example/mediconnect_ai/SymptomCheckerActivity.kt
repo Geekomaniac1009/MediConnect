@@ -1,10 +1,13 @@
 package com.example.mediconnect_ai
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.speech.RecognizerIntent
+import android.util.Base64
 import android.view.Gravity
 import android.widget.ArrayAdapter
 import android.widget.LinearLayout
@@ -23,16 +26,22 @@ import com.example.mediconnect_ai.network.ChatRequest
 import com.example.mediconnect_ai.network.ChatResponse
 import com.example.mediconnect_ai.network.ExplainRequest
 import com.example.mediconnect_ai.network.ExplainResponse
+import com.example.mediconnect_ai.network.GuidedVitalsResponse
+import com.example.mediconnect_ai.network.IntentRequest
+import com.example.mediconnect_ai.network.IntentResponse
 import com.example.mediconnect_ai.network.RetrofitClient
 import com.example.mediconnect_ai.network.SymptomRequest
 import com.example.mediconnect_ai.network.SymptomResponse
 import com.example.mediconnect_ai.network.TriageRequest
 import com.example.mediconnect_ai.network.TriageResponse
 import com.example.mediconnect_ai.network.VitalsVisit
+import com.example.mediconnect_ai.network.VoiceAnswerRequest
+import com.example.mediconnect_ai.network.VoiceAnswerResponse
 import kotlinx.coroutines.launch
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
+import java.io.File
 import java.util.Locale
 
 class SymptomCheckerActivity : AppCompatActivity() {
@@ -44,6 +53,10 @@ class SymptomCheckerActivity : AppCompatActivity() {
 
     private val SPEECH_REQUEST_CODE = 123
     private val RECORD_AUDIO_PERMISSION_CODE = 1
+    private var guidedCategory: String = "maternal"
+    private var guidedStep: Int = 0
+    private var isGuidedFlowActive: Boolean = false
+    private var mediaPlayer: MediaPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,6 +85,30 @@ class SymptomCheckerActivity : AppCompatActivity() {
 
         binding.btnVoiceInput.setOnClickListener {
             checkPermissionAndStartVoiceInput()
+        }
+
+        binding.btnRunTriage.setOnClickListener {
+            runTriageExplainDemo(guidedCategory)
+        }
+
+        binding.btnVoiceAsk.setOnClickListener {
+            val question = binding.etSymptomInput.text.toString().trim()
+            if (question.isBlank()) {
+                Toast.makeText(this, "Type or speak a question first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            addMessageToChat(question, true)
+            answerVoiceQuestion(question)
+            binding.etSymptomInput.text.clear()
+        }
+
+        binding.btnGuidedVitals.setOnClickListener {
+            if (!isGuidedFlowActive) {
+                guidedStep = 0
+                isGuidedFlowActive = true
+                addMessageToChat("Starting guided vitals for $guidedCategory.", false)
+            }
+            requestGuidedPrompt()
         }
     }
 
@@ -114,20 +151,26 @@ class SymptomCheckerActivity : AppCompatActivity() {
     private fun getChatResponse(message: String) {
         addMessageToChat("Thinking...", false)
         val languageCode = selectedLanguageCode()
-        val request = ChatRequest(message = message, language = languageCode)
+        val request = ChatRequest(
+            message = message,
+            language = languageCode,
+            patientContext = buildProfileContext(),
+        )
         RetrofitClient.instance.chat(request).enqueue(object : Callback<ChatResponse> {
             override fun onResponse(call: Call<ChatResponse>, response: Response<ChatResponse>) {
-                binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+                removeLastChatBubbleIfPresent()
                 if (response.isSuccessful) {
-                    val reply = response.body()?.response ?: "Sorry, I couldn't generate a reply right now."
+                    val body = response.body()
+                    val reply = body?.response ?: "Sorry, I couldn't generate a reply right now."
                     addMessageToChat(reply, false)
+                    playAudioIfAvailable(body?.ttsAudioB64)
                 } else {
                     getSymptomSuggestion(message)
                 }
             }
 
             override fun onFailure(call: Call<ChatResponse>, t: Throwable) {
-                binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+                removeLastChatBubbleIfPresent()
                 getSymptomSuggestion(message)
             }
         })
@@ -143,7 +186,7 @@ class SymptomCheckerActivity : AppCompatActivity() {
 
         val triageRequest = TriageRequest(
             category = supportedCategory,
-            patientId = "DEMO_001",
+            patientId = currentUserId() ?: "DEMO_001",
             history = demoHistoryForCategory(supportedCategory),
         )
 
@@ -306,7 +349,7 @@ class SymptomCheckerActivity : AppCompatActivity() {
         val request = SymptomRequest(symptom = symptom, language = selectedLanguage)
         RetrofitClient.instance.checkSymptom(request).enqueue(object : Callback<SymptomResponse> {
             override fun onResponse(call: Call<SymptomResponse>, response: Response<SymptomResponse>) {
-                binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+                removeLastChatBubbleIfPresent()
                 if (response.isSuccessful) {
                     val suggestion = response.body()?.suggestion ?: "Sorry, I couldn't get a suggestion."
                     addMessageToChat(suggestion, false)
@@ -315,11 +358,175 @@ class SymptomCheckerActivity : AppCompatActivity() {
                 }
             }
             override fun onFailure(call: Call<SymptomResponse>, t: Throwable) {
-                binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+                removeLastChatBubbleIfPresent()
                 addMessageToChat("Failed to connect to the server. Please check your internet connection.", false)
                 Toast.makeText(applicationContext, t.message, Toast.LENGTH_LONG).show()
             }
         })
+    }
+
+    private fun handleVoiceTranscript(transcript: String) {
+        addMessageToChat("Parsing voice intent...", false)
+        val request = IntentRequest(transcript = transcript, language = selectedLanguageCode())
+        RetrofitClient.instance.parseVoiceIntent(request).enqueue(object : Callback<IntentResponse> {
+            override fun onResponse(call: Call<IntentResponse>, response: Response<IntentResponse>) {
+                removeLastChatBubbleIfPresent()
+                if (!response.isSuccessful || response.body() == null) {
+                    getChatResponse(transcript)
+                    return
+                }
+
+                val payload = response.body()!!
+                val categoryFromEntity = (payload.entities?.get("category") as? String)?.lowercase(Locale.ROOT)
+                if (categoryFromEntity in setOf("maternal", "child", "tb", "general")) {
+                    guidedCategory = categoryFromEntity!!
+                }
+
+                when (payload.intent.lowercase(Locale.ROOT)) {
+                    "record_vitals" -> {
+                        guidedStep = 0
+                        isGuidedFlowActive = true
+                        addMessageToChat("Detected vitals recording. Starting guided flow.", false)
+                        requestGuidedPrompt()
+                    }
+                    "ask_question", "check_patient" -> answerVoiceQuestion(transcript)
+                    "report_symptom" -> handleAssistantQuery(transcript)
+                    else -> getChatResponse(transcript)
+                }
+            }
+
+            override fun onFailure(call: Call<IntentResponse>, t: Throwable) {
+                removeLastChatBubbleIfPresent()
+                getChatResponse(transcript)
+            }
+        })
+    }
+
+    private fun requestGuidedPrompt() {
+        RetrofitClient.instance.getGuidedPrompt(
+            category = guidedCategory,
+            step = guidedStep,
+            language = selectedLanguageCode(),
+        ).enqueue(object : Callback<GuidedVitalsResponse> {
+            override fun onResponse(
+                call: Call<GuidedVitalsResponse>,
+                response: Response<GuidedVitalsResponse>,
+            ) {
+                if (!response.isSuccessful || response.body() == null) {
+                    addMessageToChat("Could not fetch guided prompt. Please try again.", false)
+                    return
+                }
+
+                val prompt = response.body()!!
+                addMessageToChat(prompt.message, false)
+                playAudioIfAvailable(prompt.ttsAudioB64)
+
+                if (prompt.done) {
+                    isGuidedFlowActive = false
+                    guidedStep = 0
+                } else {
+                    guidedStep = (prompt.step ?: guidedStep) + 1
+                }
+            }
+
+            override fun onFailure(call: Call<GuidedVitalsResponse>, t: Throwable) {
+                addMessageToChat("Could not fetch guided prompt. Please check backend connection.", false)
+            }
+        })
+    }
+
+    private fun answerVoiceQuestion(question: String) {
+        addMessageToChat("Thinking...", false)
+        val request = VoiceAnswerRequest(
+            question = question,
+            language = selectedLanguageCode(),
+            patientContext = buildProfileContext(),
+        )
+        RetrofitClient.instance.answerVoiceQuestion(request)
+            .enqueue(object : Callback<VoiceAnswerResponse> {
+                override fun onResponse(
+                    call: Call<VoiceAnswerResponse>,
+                    response: Response<VoiceAnswerResponse>,
+                ) {
+                    removeLastChatBubbleIfPresent()
+                    if (response.isSuccessful && response.body() != null) {
+                        val body = response.body()!!
+                        addMessageToChat(body.answer, false)
+                        playAudioIfAvailable(body.ttsAudioB64)
+                    } else {
+                        addMessageToChat("Voice answer failed. Please try again.", false)
+                    }
+                }
+
+                override fun onFailure(call: Call<VoiceAnswerResponse>, t: Throwable) {
+                    removeLastChatBubbleIfPresent()
+                    addMessageToChat("Voice answer failed. Please check backend connection.", false)
+                }
+            })
+    }
+
+    private fun currentUserId(): String? {
+        val prefs = getSharedPreferences(ProfileActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(ProfileActivity.KEY_USER_ID, null)
+    }
+
+    private fun buildProfileContext(): Map<String, Any>? {
+        val prefs = getSharedPreferences(ProfileActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        val context = mutableMapOf<String, Any>()
+
+        prefs.getString(ProfileActivity.KEY_USER_ID, null)?.takeIf { it.isNotBlank() }?.let {
+            context["user_id"] = it
+        }
+        prefs.getString(ProfileActivity.KEY_USER_NAME, null)?.takeIf { it.isNotBlank() }?.let {
+            context["user_name"] = it
+        }
+        prefs.getString(ProfileActivity.KEY_USER_ROLE, null)?.takeIf { it.isNotBlank() }?.let {
+            context["user_role"] = it
+        }
+        prefs.getString(ProfileActivity.KEY_ASSIGNED_AREA, null)?.takeIf { it.isNotBlank() }?.let {
+            context["assigned_area"] = it
+        }
+        context["language"] = selectedLanguageCode()
+
+        return context.ifEmpty { null }
+    }
+
+    private fun removeLastChatBubbleIfPresent() {
+        if (binding.chatContainer.childCount > 0) {
+            binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+        }
+    }
+
+    private fun playAudioIfAvailable(audioB64: String?) {
+        if (audioB64.isNullOrBlank()) return
+
+        val tempFile = try {
+            val audioBytes = Base64.decode(audioB64, Base64.DEFAULT)
+            File.createTempFile("mediconnect_tts_", ".mp3", cacheDir).apply {
+                writeBytes(audioBytes)
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Audio playback unavailable", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        mediaPlayer?.release()
+        mediaPlayer = MediaPlayer().apply {
+            setDataSource(tempFile.absolutePath)
+            setOnCompletionListener {
+                it.release()
+                mediaPlayer = null
+                tempFile.delete()
+            }
+            setOnErrorListener { mp, _, _ ->
+                mp.release()
+                mediaPlayer = null
+                tempFile.delete()
+                true
+            }
+            prepare()
+            start()
+        }
     }
 
     // This function only handles adding a message to the UI
@@ -400,7 +607,17 @@ class SymptomCheckerActivity : AppCompatActivity() {
                 data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.let { results ->
                     results[0]
                 }
-            binding.etSymptomInput.setText(spokenText)
+            spokenText?.let {
+                binding.etSymptomInput.setText(it)
+                addMessageToChat(it, true)
+                handleVoiceTranscript(it)
+            }
         }
+    }
+
+    override fun onDestroy() {
+        mediaPlayer?.release()
+        mediaPlayer = null
+        super.onDestroy()
     }
 }

@@ -19,9 +19,16 @@ import com.example.mediconnect_ai.database.AppDatabase
 import com.example.mediconnect_ai.database.ChatMessage
 import com.example.mediconnect_ai.database.ChatMessageDao
 import com.example.mediconnect_ai.databinding.ActivitySymptomCheckerBinding
+import com.example.mediconnect_ai.network.ChatRequest
+import com.example.mediconnect_ai.network.ChatResponse
+import com.example.mediconnect_ai.network.ExplainRequest
+import com.example.mediconnect_ai.network.ExplainResponse
 import com.example.mediconnect_ai.network.RetrofitClient
 import com.example.mediconnect_ai.network.SymptomRequest
 import com.example.mediconnect_ai.network.SymptomResponse
+import com.example.mediconnect_ai.network.TriageRequest
+import com.example.mediconnect_ai.network.TriageResponse
+import com.example.mediconnect_ai.network.VitalsVisit
 import kotlinx.coroutines.launch
 import retrofit2.Call
 import retrofit2.Callback
@@ -56,7 +63,7 @@ class SymptomCheckerActivity : AppCompatActivity() {
             val symptomText = binding.etSymptomInput.text.toString()
             if (symptomText.isNotBlank()) {
                 addMessageToChat(symptomText, true)
-                getSymptomSuggestion(symptomText)
+                handleAssistantQuery(symptomText)
                 binding.etSymptomInput.text.clear()
             } else {
                 Toast.makeText(this, "Please describe a symptom", Toast.LENGTH_SHORT).show()
@@ -91,6 +98,206 @@ class SymptomCheckerActivity : AppCompatActivity() {
     private fun addMessageToChat(message: String, isUserMessage: Boolean) {
         addMessageToUi(message, isUserMessage)
         saveMessageToDatabase(message, isUserMessage)
+    }
+
+    private fun handleAssistantQuery(message: String) {
+        val normalized = message.trim()
+        if (normalized.startsWith("/triage-demo", ignoreCase = true)) {
+            val parts = normalized.split(" ")
+            val category = parts.getOrNull(1)?.lowercase(Locale.ROOT) ?: "maternal"
+            runTriageExplainDemo(category)
+            return
+        }
+        getChatResponse(message)
+    }
+
+    private fun getChatResponse(message: String) {
+        addMessageToChat("Thinking...", false)
+        val languageCode = selectedLanguageCode()
+        val request = ChatRequest(message = message, language = languageCode)
+        RetrofitClient.instance.chat(request).enqueue(object : Callback<ChatResponse> {
+            override fun onResponse(call: Call<ChatResponse>, response: Response<ChatResponse>) {
+                binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+                if (response.isSuccessful) {
+                    val reply = response.body()?.response ?: "Sorry, I couldn't generate a reply right now."
+                    addMessageToChat(reply, false)
+                } else {
+                    getSymptomSuggestion(message)
+                }
+            }
+
+            override fun onFailure(call: Call<ChatResponse>, t: Throwable) {
+                binding.chatContainer.removeViewAt(binding.chatContainer.childCount - 1)
+                getSymptomSuggestion(message)
+            }
+        })
+    }
+
+    private fun runTriageExplainDemo(category: String) {
+        val supportedCategory = when (category) {
+            "maternal", "child", "tb", "general" -> category
+            else -> "maternal"
+        }
+
+        addMessageToChat("Running triage demo for $supportedCategory...", false)
+
+        val triageRequest = TriageRequest(
+            category = supportedCategory,
+            patientId = "DEMO_001",
+            history = demoHistoryForCategory(supportedCategory),
+        )
+
+        RetrofitClient.instance.triage(triageRequest).enqueue(object : Callback<TriageResponse> {
+            override fun onResponse(call: Call<TriageResponse>, response: Response<TriageResponse>) {
+                if (!response.isSuccessful || response.body() == null) {
+                    addMessageToChat("Triage demo failed. Please check backend availability.", false)
+                    return
+                }
+
+                val triage = response.body()!!
+                addMessageToChat(
+                    "Triage risk: ${triage.riskLevel} | anomaly score: ${"%.3f".format(triage.anomalyScore)}",
+                    false,
+                )
+
+                val explainRequest = ExplainRequest(
+                    explanationContext = triage.explanationContext,
+                    audience = "asha",
+                    language = selectedLanguageCode(),
+                )
+
+                RetrofitClient.instance.explain(explainRequest)
+                    .enqueue(object : Callback<ExplainResponse> {
+                        override fun onResponse(
+                            call: Call<ExplainResponse>,
+                            response: Response<ExplainResponse>,
+                        ) {
+                            if (response.isSuccessful && response.body() != null) {
+                                addMessageToChat(response.body()!!.explanation, false)
+                            } else {
+                                addMessageToChat("Explainability step failed after triage.", false)
+                            }
+                        }
+
+                        override fun onFailure(call: Call<ExplainResponse>, t: Throwable) {
+                            addMessageToChat("Explainability step failed after triage.", false)
+                        }
+                    })
+            }
+
+            override fun onFailure(call: Call<TriageResponse>, t: Throwable) {
+                addMessageToChat("Triage demo failed. Please check backend availability.", false)
+            }
+        })
+    }
+
+    private fun demoHistoryForCategory(category: String): List<VitalsVisit> {
+        return when (category) {
+            "maternal" -> listOf(
+                VitalsVisit(
+                    visitNumber = 1,
+                    systolicBp = 118.0,
+                    diastolicBp = 76.0,
+                    hemoglobin = 10.8,
+                    weightKg = 58.0,
+                    spo2 = 98.0,
+                    pulse = 84.0,
+                    gestationalWeek = 18,
+                ),
+                VitalsVisit(
+                    visitNumber = 2,
+                    systolicBp = 146.0,
+                    diastolicBp = 94.0,
+                    hemoglobin = 8.1,
+                    weightKg = 60.4,
+                    spo2 = 93.0,
+                    pulse = 104.0,
+                    gestationalWeek = 24,
+                ),
+            )
+
+            "child" -> listOf(
+                VitalsVisit(
+                    visitNumber = 1,
+                    weightKg = 9.8,
+                    muacCm = 12.8,
+                    wazScore = -1.6,
+                    spo2 = 98.0,
+                    temperature = 37.0,
+                    ageMonths = 20,
+                ),
+                VitalsVisit(
+                    visitNumber = 2,
+                    weightKg = 8.7,
+                    muacCm = 11.1,
+                    wazScore = -3.2,
+                    spo2 = 93.0,
+                    temperature = 38.6,
+                    ageMonths = 21,
+                ),
+            )
+
+            "tb" -> listOf(
+                VitalsVisit(
+                    visitNumber = 1,
+                    weightKg = 55.0,
+                    coughSeverity = 4.0,
+                    nightSweatsScore = 2.0,
+                    missedDosesWeek = 1,
+                    spo2 = 97.0,
+                    temperature = 37.0,
+                    treatmentMonth = 3,
+                ),
+                VitalsVisit(
+                    visitNumber = 2,
+                    weightKg = 53.0,
+                    coughSeverity = 8.0,
+                    nightSweatsScore = 7.0,
+                    missedDosesWeek = 5,
+                    spo2 = 92.0,
+                    temperature = 38.4,
+                    treatmentMonth = 4,
+                ),
+            )
+
+            else -> listOf(
+                VitalsVisit(
+                    visitNumber = 1,
+                    systolicBp = 132.0,
+                    diastolicBp = 84.0,
+                    fastingGlucose = 132.0,
+                    spo2 = 98.0,
+                    pulse = 82.0,
+                    bmi = 26.3,
+                ),
+                VitalsVisit(
+                    visitNumber = 2,
+                    systolicBp = 168.0,
+                    diastolicBp = 102.0,
+                    fastingGlucose = 236.0,
+                    spo2 = 93.0,
+                    pulse = 104.0,
+                    bmi = 27.2,
+                ),
+            )
+        }
+    }
+
+    private fun selectedLanguageCode(): String {
+        val selected = binding.languageSpinner.selectedItem.toString()
+        return when {
+            selected.contains("English", ignoreCase = true) -> "en"
+            selected.contains("Hindi", ignoreCase = true) || selected.contains("हिन्दी") -> "hi"
+            selected.contains("Marathi", ignoreCase = true) || selected.contains("मराठी") -> "mr"
+            selected.contains("Bengali", ignoreCase = true) || selected.contains("বাংলা") -> "bn"
+            selected.contains("Telugu", ignoreCase = true) || selected.contains("తెలుగు") -> "te"
+            selected.contains("Tamil", ignoreCase = true) || selected.contains("தமிழ்") -> "ta"
+            selected.contains("Gujarati", ignoreCase = true) || selected.contains("ગુજરાતી") -> "gu"
+            selected.contains("Kannada", ignoreCase = true) || selected.contains("ಕನ್ನಡ") -> "kn"
+            selected.contains("Malayalam", ignoreCase = true) || selected.contains("മലയാളം") -> "ml"
+            selected.contains("Punjabi", ignoreCase = true) || selected.contains("ਪੰਜਾਬੀ") -> "pa"
+            else -> "en"
+        }
     }
 
     private fun getSymptomSuggestion(symptom: String) {

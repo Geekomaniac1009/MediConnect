@@ -1,6 +1,7 @@
 package com.example.mediconnect_ai
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,8 +11,10 @@ import android.speech.RecognizerIntent
 import android.util.Base64
 import android.view.Gravity
 import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -21,7 +24,10 @@ import androidx.lifecycle.lifecycleScope
 import com.example.mediconnect_ai.database.AppDatabase
 import com.example.mediconnect_ai.database.ChatMessage
 import com.example.mediconnect_ai.database.ChatMessageDao
+import com.example.mediconnect_ai.database.PatientVitalRecord
+import com.example.mediconnect_ai.database.PatientVitalRecordDao
 import com.example.mediconnect_ai.databinding.ActivitySymptomCheckerBinding
+import com.example.mediconnect_ai.firestore.FirebaseVitalsHelper
 import com.example.mediconnect_ai.network.ChatRequest
 import com.example.mediconnect_ai.network.ChatResponse
 import com.example.mediconnect_ai.network.ExplainRequest
@@ -42,6 +48,8 @@ import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class SymptomCheckerActivity : AppCompatActivity() {
@@ -50,6 +58,7 @@ class SymptomCheckerActivity : AppCompatActivity() {
     // Database variables
     private lateinit var db: AppDatabase
     private lateinit var chatMessageDao: ChatMessageDao
+    private lateinit var patientVitalRecordDao: PatientVitalRecordDao
 
     private val SPEECH_REQUEST_CODE = 123
     private val RECORD_AUDIO_PERMISSION_CODE = 1
@@ -57,6 +66,7 @@ class SymptomCheckerActivity : AppCompatActivity() {
     private var guidedStep: Int = 0
     private var isGuidedFlowActive: Boolean = false
     private var mediaPlayer: MediaPlayer? = null
+    private val triageCategories = listOf("maternal", "child", "tb", "general")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,8 +76,11 @@ class SymptomCheckerActivity : AppCompatActivity() {
         // Initialize the database and DAO
         db = AppDatabase.getInstance(applicationContext)
         chatMessageDao = db.chatMessageDao()
+        patientVitalRecordDao = db.patientVitalRecordDao()
 
         setupLanguageSpinner()
+        setupCategorySpinner()
+        prefillContextInputs()
 
         // Load previous chat history when the screen opens
         loadChatHistory()
@@ -109,6 +122,10 @@ class SymptomCheckerActivity : AppCompatActivity() {
                 addMessageToChat("Starting guided vitals for $guidedCategory.", false)
             }
             requestGuidedPrompt()
+        }
+
+        binding.btnManualVitals.setOnClickListener {
+            showManualVitalsDialog()
         }
     }
 
@@ -182,56 +199,103 @@ class SymptomCheckerActivity : AppCompatActivity() {
             else -> "maternal"
         }
 
+        val patientId = currentPatientIdForContext()
+        if (patientId.isBlank()) {
+            Toast.makeText(this, "Enter Patient ID before running triage", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         addMessageToChat("Running triage demo for $supportedCategory...", false)
 
-        val triageRequest = TriageRequest(
-            category = supportedCategory,
-            patientId = currentUserId() ?: "DEMO_001",
-            history = demoHistoryForCategory(supportedCategory),
-        )
+        lifecycleScope.launch {
+            val manualHistory = loadManualTrajectory(patientId, supportedCategory)
+            val triageHistory = if (manualHistory.isNotEmpty()) {
+                manualHistory
+            } else {
+                demoHistoryForCategory(supportedCategory)
+            }
 
-        RetrofitClient.instance.triage(triageRequest).enqueue(object : Callback<TriageResponse> {
-            override fun onResponse(call: Call<TriageResponse>, response: Response<TriageResponse>) {
-                if (!response.isSuccessful || response.body() == null) {
-                    addMessageToChat("Triage demo failed. Please check backend availability.", false)
-                    return
-                }
+            val dataSource = if (manualHistory.isNotEmpty()) "manual records" else "demo fallback"
+            addMessageToChat(
+                "Using ${triageHistory.size} visits from $dataSource for patient $patientId.",
+                false,
+            )
 
-                val triage = response.body()!!
-                addMessageToChat(
-                    "Triage risk: ${triage.riskLevel} | anomaly score: ${"%.3f".format(triage.anomalyScore)}",
-                    false,
-                )
+            val triageRequest = TriageRequest(
+                category = supportedCategory,
+                patientId = patientId,
+                history = triageHistory,
+            )
 
-                val explainRequest = ExplainRequest(
-                    explanationContext = triage.explanationContext,
-                    audience = "asha",
-                    language = selectedLanguageCode(),
-                )
+            RetrofitClient.instance.triage(triageRequest).enqueue(object : Callback<TriageResponse> {
+                override fun onResponse(call: Call<TriageResponse>, response: Response<TriageResponse>) {
+                    if (!response.isSuccessful || response.body() == null) {
+                        addMessageToChat("Triage failed. Please check backend availability.", false)
+                        return
+                    }
 
-                RetrofitClient.instance.explain(explainRequest)
-                    .enqueue(object : Callback<ExplainResponse> {
-                        override fun onResponse(
-                            call: Call<ExplainResponse>,
-                            response: Response<ExplainResponse>,
-                        ) {
-                            if (response.isSuccessful && response.body() != null) {
-                                addMessageToChat(response.body()!!.explanation, false)
-                            } else {
+                    val triage = response.body()!!
+                    addMessageToChat(
+                        "Triage risk: ${triage.riskLevel} | anomaly score: ${"%.3f".format(triage.anomalyScore)}",
+                        false,
+                    )
+
+                    val explainContext = triage.explanationContext.toMutableMap()
+                    explainContext["patient_id"] = patientId
+                    explainContext["category"] = supportedCategory
+                    explainContext["trajectory_visits"] = triageHistory.map {
+                        mapOf(
+                            "visit_number" to it.visitNumber,
+                            "systolic_bp" to it.systolicBp,
+                            "diastolic_bp" to it.diastolicBp,
+                            "hemoglobin" to it.hemoglobin,
+                            "weight_kg" to it.weightKg,
+                            "spo2" to it.spo2,
+                            "pulse" to it.pulse,
+                            "gestational_week" to it.gestationalWeek,
+                            "muac_cm" to it.muacCm,
+                            "waz_score" to it.wazScore,
+                            "temperature" to it.temperature,
+                            "age_months" to it.ageMonths,
+                            "cough_severity" to it.coughSeverity,
+                            "night_sweats_score" to it.nightSweatsScore,
+                            "missed_doses_week" to it.missedDosesWeek,
+                            "treatment_month" to it.treatmentMonth,
+                            "fasting_glucose" to it.fastingGlucose,
+                            "bmi" to it.bmi,
+                        )
+                    }
+
+                    val explainRequest = ExplainRequest(
+                        explanationContext = explainContext,
+                        audience = "asha",
+                        language = selectedLanguageCode(),
+                    )
+
+                    RetrofitClient.instance.explain(explainRequest)
+                        .enqueue(object : Callback<ExplainResponse> {
+                            override fun onResponse(
+                                call: Call<ExplainResponse>,
+                                response: Response<ExplainResponse>,
+                            ) {
+                                if (response.isSuccessful && response.body() != null) {
+                                    addMessageToChat(response.body()!!.explanation, false)
+                                } else {
+                                    addMessageToChat("Explainability step failed after triage.", false)
+                                }
+                            }
+
+                            override fun onFailure(call: Call<ExplainResponse>, t: Throwable) {
                                 addMessageToChat("Explainability step failed after triage.", false)
                             }
-                        }
+                        })
+                }
 
-                        override fun onFailure(call: Call<ExplainResponse>, t: Throwable) {
-                            addMessageToChat("Explainability step failed after triage.", false)
-                        }
-                    })
-            }
-
-            override fun onFailure(call: Call<TriageResponse>, t: Throwable) {
-                addMessageToChat("Triage demo failed. Please check backend availability.", false)
-            }
-        })
+                override fun onFailure(call: Call<TriageResponse>, t: Throwable) {
+                    addMessageToChat("Triage failed. Please check backend availability.", false)
+                }
+            })
+        }
     }
 
     private fun demoHistoryForCategory(category: String): List<VitalsVisit> {
@@ -437,32 +501,57 @@ class SymptomCheckerActivity : AppCompatActivity() {
 
     private fun answerVoiceQuestion(question: String) {
         addMessageToChat("Thinking...", false)
-        val request = VoiceAnswerRequest(
-            question = question,
-            language = selectedLanguageCode(),
-            patientContext = buildProfileContext(),
-        )
-        RetrofitClient.instance.answerVoiceQuestion(request)
-            .enqueue(object : Callback<VoiceAnswerResponse> {
-                override fun onResponse(
-                    call: Call<VoiceAnswerResponse>,
-                    response: Response<VoiceAnswerResponse>,
-                ) {
-                    removeLastChatBubbleIfPresent()
-                    if (response.isSuccessful && response.body() != null) {
-                        val body = response.body()!!
-                        addMessageToChat(body.answer, false)
-                        playAudioIfAvailable(body.ttsAudioB64)
-                    } else {
-                        addMessageToChat("Voice answer failed. Please try again.", false)
+        lifecycleScope.launch {
+            val patientContext = buildProfileContext().orEmpty().toMutableMap()
+            val patientId = currentPatientIdForContext()
+            if (patientId.isNotBlank()) {
+                val trajectory = patientVitalRecordDao.getLatestForPatient(patientId, 5)
+                    .sortedBy { it.recordedAt }
+                    .map {
+                        mapOf(
+                            "category" to it.category,
+                            "recorded_at" to it.recordedAt,
+                            "systolic_bp" to it.systolicBp,
+                            "diastolic_bp" to it.diastolicBp,
+                            "hemoglobin" to it.hemoglobin,
+                            "weight_kg" to it.weightKg,
+                            "spo2" to it.spo2,
+                            "temperature" to it.temperature,
+                            "notes" to it.notes,
+                        )
                     }
-                }
+                patientContext["patient_id"] = patientId
+                patientContext["recent_vitals"] = trajectory
+            }
 
-                override fun onFailure(call: Call<VoiceAnswerResponse>, t: Throwable) {
-                    removeLastChatBubbleIfPresent()
-                    addMessageToChat("Voice answer failed. Please check backend connection.", false)
-                }
-            })
+            val request = VoiceAnswerRequest(
+                question = question,
+                language = selectedLanguageCode(),
+                patientContext = patientContext,
+            )
+
+            RetrofitClient.instance.answerVoiceQuestion(request)
+                .enqueue(object : Callback<VoiceAnswerResponse> {
+                    override fun onResponse(
+                        call: Call<VoiceAnswerResponse>,
+                        response: Response<VoiceAnswerResponse>,
+                    ) {
+                        removeLastChatBubbleIfPresent()
+                        if (response.isSuccessful && response.body() != null) {
+                            val body = response.body()!!
+                            addMessageToChat(body.answer, false)
+                            playAudioIfAvailable(body.ttsAudioB64)
+                        } else {
+                            addMessageToChat("Voice answer failed. Please try again.", false)
+                        }
+                    }
+
+                    override fun onFailure(call: Call<VoiceAnswerResponse>, t: Throwable) {
+                        removeLastChatBubbleIfPresent()
+                        addMessageToChat("Voice answer failed. Please check backend connection.", false)
+                    }
+                })
+        }
     }
 
     private fun currentUserId(): String? {
@@ -486,6 +575,10 @@ class SymptomCheckerActivity : AppCompatActivity() {
         prefs.getString(ProfileActivity.KEY_ASSIGNED_AREA, null)?.takeIf { it.isNotBlank() }?.let {
             context["assigned_area"] = it
         }
+        currentPatientIdForContext().takeIf { it.isNotBlank() }?.let {
+            context["patient_id"] = it
+        }
+        context["category"] = guidedCategory
         context["language"] = selectedLanguageCode()
 
         return context.ifEmpty { null }
@@ -564,6 +657,203 @@ class SymptomCheckerActivity : AppCompatActivity() {
         ).also { adapter ->
             adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             binding.languageSpinner.adapter = adapter
+        }
+    }
+
+    private fun setupCategorySpinner() {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            triageCategories,
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.categorySpinner.adapter = adapter
+        binding.categorySpinner.setSelection(0)
+
+        binding.categorySpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: android.widget.AdapterView<*>?,
+                view: android.view.View?,
+                position: Int,
+                id: Long,
+            ) {
+                guidedCategory = triageCategories.getOrElse(position) { "maternal" }
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {
+                guidedCategory = "maternal"
+            }
+        }
+    }
+
+    private fun prefillContextInputs() {
+        val savedUserId = currentUserId()
+        if (!savedUserId.isNullOrBlank()) {
+            binding.etPatientId.setText(savedUserId)
+        }
+    }
+
+    private fun currentPatientIdForContext(): String {
+        val inputPatientId = binding.etPatientId.text?.toString()?.trim().orEmpty()
+        if (inputPatientId.isNotBlank()) return inputPatientId
+        return currentUserId().orEmpty()
+    }
+
+    private fun showManualVitalsDialog() {
+        val category = guidedCategory
+        val dialogLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(42, 24, 42, 0)
+        }
+
+        fun addInput(label: String, hint: String): EditText {
+            val title = TextView(this).apply { text = label }
+            val input = EditText(this).apply {
+                this.hint = hint
+                setSingleLine(true)
+            }
+            dialogLayout.addView(title)
+            dialogLayout.addView(input)
+            return input
+        }
+
+        val patientIdInput = addInput("Patient ID", "Required")
+        patientIdInput.setText(currentPatientIdForContext())
+
+        val commonSpo2Input = addInput("SpO2", "Optional")
+        val commonWeightInput = addInput("Weight (kg)", "Optional")
+        val commonTempInput = addInput("Temperature (C)", "Optional")
+        val notesInput = addInput("Notes", "Optional")
+
+        val categoryInputs = when (category) {
+            "maternal" -> mapOf(
+                "systolic" to addInput("Systolic BP", "e.g. 120"),
+                "diastolic" to addInput("Diastolic BP", "e.g. 80"),
+                "hemoglobin" to addInput("Hemoglobin", "e.g. 10.5"),
+                "pulse" to addInput("Pulse", "e.g. 84"),
+                "gestationalWeek" to addInput("Gestational Week", "e.g. 24"),
+            )
+
+            "child" -> mapOf(
+                "muac" to addInput("MUAC (cm)", "e.g. 12.3"),
+                "waz" to addInput("WAZ Score", "e.g. -2.1"),
+                "ageMonths" to addInput("Age (months)", "e.g. 21"),
+            )
+
+            "tb" -> mapOf(
+                "cough" to addInput("Cough Severity (0-10)", "e.g. 7"),
+                "nightSweats" to addInput("Night Sweats (0-10)", "e.g. 6"),
+                "missedDoses" to addInput("Missed Doses (week)", "e.g. 2"),
+                "treatmentMonth" to addInput("Treatment Month", "e.g. 4"),
+            )
+
+            else -> mapOf(
+                "systolic" to addInput("Systolic BP", "e.g. 145"),
+                "diastolic" to addInput("Diastolic BP", "e.g. 92"),
+                "fastingGlucose" to addInput("Fasting Glucose", "e.g. 126"),
+                "bmi" to addInput("BMI", "e.g. 27.4"),
+                "pulse" to addInput("Pulse", "e.g. 90"),
+            )
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Add Manual Vitals ($category)")
+            .setView(dialogLayout)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val patientId = patientIdInput.text.toString().trim()
+                if (patientId.isBlank()) {
+                    Toast.makeText(this, "Patient ID is required", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                val timestamp = System.currentTimeMillis()
+                val record = PatientVitalRecord(
+                    userId = currentUserId(),
+                    patientId = patientId,
+                    category = category,
+                    recordedAt = timestamp,
+                    systolicBp = parseDouble(categoryInputs["systolic"]),
+                    diastolicBp = parseDouble(categoryInputs["diastolic"]),
+                    hemoglobin = parseDouble(categoryInputs["hemoglobin"]),
+                    weightKg = parseDouble(commonWeightInput),
+                    spo2 = parseDouble(commonSpo2Input),
+                    pulse = parseDouble(categoryInputs["pulse"]),
+                    gestationalWeek = parseInt(categoryInputs["gestationalWeek"]),
+                    muacCm = parseDouble(categoryInputs["muac"]),
+                    wazScore = parseDouble(categoryInputs["waz"]),
+                    temperature = parseDouble(commonTempInput),
+                    ageMonths = parseInt(categoryInputs["ageMonths"]),
+                    coughSeverity = parseDouble(categoryInputs["cough"]),
+                    nightSweatsScore = parseDouble(categoryInputs["nightSweats"]),
+                    missedDosesWeek = parseInt(categoryInputs["missedDoses"]),
+                    treatmentMonth = parseInt(categoryInputs["treatmentMonth"]),
+                    fastingGlucose = parseDouble(categoryInputs["fastingGlucose"]),
+                    bmi = parseDouble(categoryInputs["bmi"]),
+                    notes = notesInput.text.toString().trim().ifBlank { null },
+                )
+
+                saveManualVitalRecord(record)
+            }
+            .show()
+    }
+
+    private fun parseDouble(input: EditText?): Double? {
+        val raw = input?.text?.toString()?.trim().orEmpty()
+        return raw.toDoubleOrNull()
+    }
+
+    private fun parseInt(input: EditText?): Int? {
+        val raw = input?.text?.toString()?.trim().orEmpty()
+        return raw.toIntOrNull()
+    }
+
+    private fun saveManualVitalRecord(record: PatientVitalRecord) {
+        lifecycleScope.launch {
+            val rowId = patientVitalRecordDao.insert(record)
+            val savedRecord = record.copy(id = rowId)
+
+            FirebaseVitalsHelper.saveVitalRecord(savedRecord)
+
+            val timestamp = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
+                .format(Date(savedRecord.recordedAt))
+            addMessageToChat(
+                "Saved ${savedRecord.category} vitals for patient ${savedRecord.patientId} at $timestamp.",
+                false,
+            )
+        }
+    }
+
+    private suspend fun loadManualTrajectory(
+        patientId: String,
+        category: String,
+        limit: Int = 10,
+    ): List<VitalsVisit> {
+        val records = patientVitalRecordDao
+            .getLatestForPatientCategory(patientId = patientId, category = category, limit = limit)
+            .sortedBy { it.recordedAt }
+
+        return records.mapIndexed { index, record ->
+            VitalsVisit(
+                visitNumber = index + 1,
+                systolicBp = record.systolicBp,
+                diastolicBp = record.diastolicBp,
+                hemoglobin = record.hemoglobin,
+                weightKg = record.weightKg,
+                spo2 = record.spo2,
+                pulse = record.pulse,
+                gestationalWeek = record.gestationalWeek,
+                muacCm = record.muacCm,
+                wazScore = record.wazScore,
+                temperature = record.temperature,
+                ageMonths = record.ageMonths,
+                coughSeverity = record.coughSeverity,
+                nightSweatsScore = record.nightSweatsScore,
+                missedDosesWeek = record.missedDosesWeek,
+                treatmentMonth = record.treatmentMonth,
+                fastingGlucose = record.fastingGlucose,
+                bmi = record.bmi,
+            )
         }
     }
 

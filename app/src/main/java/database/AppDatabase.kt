@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ANCVisit::class,
         PNCVisit::class,
         TBProfile::class,   // ✅ NEW
-        TBVisit::class      // ✅ NEW
+        TBVisit::class,     // ✅ NEW
+        PatientVitalRecord::class
     ],
-    version = 15,   // ✅ KEEP AS 15
+    version = 16,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -34,6 +35,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun ancVisitDao(): ANCVisitDao
     abstract fun pncVisitDao(): PNCVisitDao
     abstract fun tbDao(): TBDao // ✅ NEW
+    abstract fun patientVitalRecordDao(): PatientVitalRecordDao
 
     companion object {
         @Volatile
@@ -248,6 +250,47 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `patient_vitals_table` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `userId` TEXT,
+                        `patientId` TEXT NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `recordedAt` INTEGER NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `systolicBp` REAL,
+                        `diastolicBp` REAL,
+                        `hemoglobin` REAL,
+                        `weightKg` REAL,
+                        `spo2` REAL,
+                        `pulse` REAL,
+                        `gestationalWeek` INTEGER,
+                        `muacCm` REAL,
+                        `wazScore` REAL,
+                        `temperature` REAL,
+                        `ageMonths` INTEGER,
+                        `coughSeverity` REAL,
+                        `nightSweatsScore` REAL,
+                        `missedDosesWeek` INTEGER,
+                        `treatmentMonth` INTEGER,
+                        `fastingGlucose` REAL,
+                        `bmi` REAL,
+                        `notes` TEXT
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_patient_vitals_table_patientId_category_recordedAt` ON `patient_vitals_table` (`patientId`, `category`, `recordedAt`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_patient_vitals_table_userId_recordedAt` ON `patient_vitals_table` (`userId`, `recordedAt`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -259,7 +302,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
                         MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
-                        MIGRATION_13_14, MIGRATION_14_15
+                        MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16
                     )
                     .fallbackToDestructiveMigration() // ✅ Allows Room to rebuild DB if migrations fail
                     .build()

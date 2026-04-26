@@ -208,7 +208,13 @@ class LLMExplainer:
 
         try:
             chat = self.model.start_chat(history=messages[:-1])
-            resp = chat.send_message(messages[-1]["parts"][0])
+            resp = chat.send_message(
+                messages[-1]["parts"][0],
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=2048,
+                    temperature=0.4,
+                ),
+            )
             return resp.text.strip()
         except Exception as e:
             return f"Chat error: {str(e)}"

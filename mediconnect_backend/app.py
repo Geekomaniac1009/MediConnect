@@ -215,6 +215,8 @@ def chat_endpoint():
 			language=language,
 			chat_history=history,
 		)
+		app.logger.info("AI response (%s): %s", language, response_text)
+		print(f"[AI response {language}] {response_text}", flush=True)
 	except Exception as exc:
 		return _json_error(
 			"Chat service unavailable.",

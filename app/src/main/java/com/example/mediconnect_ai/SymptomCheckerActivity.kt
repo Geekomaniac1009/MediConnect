@@ -7,7 +7,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.os.Bundle
+import android.os.Build
 import android.speech.RecognizerIntent
+import android.text.Layout
 import android.util.Base64
 import android.view.Gravity
 import android.widget.ArrayAdapter
@@ -104,17 +106,6 @@ class SymptomCheckerActivity : AppCompatActivity() {
             runTriageExplainDemo(guidedCategory)
         }
 
-        binding.btnVoiceAsk.setOnClickListener {
-            val question = binding.etSymptomInput.text.toString().trim()
-            if (question.isBlank()) {
-                Toast.makeText(this, "Type or speak a question first", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            addMessageToChat(question, true)
-            answerVoiceQuestion(question)
-            binding.etSymptomInput.text.clear()
-        }
-
         binding.btnGuidedVitals.setOnClickListener {
             if (!isGuidedFlowActive) {
                 guidedStep = 0
@@ -182,13 +173,17 @@ class SymptomCheckerActivity : AppCompatActivity() {
                     addMessageToChat(reply, false)
                     playAudioIfAvailable(body?.ttsAudioB64)
                 } else {
-                    getSymptomSuggestion(message)
+                    val errorText = response.errorBody()?.string()?.takeIf { it.isNotBlank() }
+                    val status = response.code()
+                    val backendMsg = errorText ?: "No error details from server."
+                    addMessageToChat("Chat API error ($status): $backendMsg", false)
                 }
             }
 
             override fun onFailure(call: Call<ChatResponse>, t: Throwable) {
                 removeLastChatBubbleIfPresent()
-                getSymptomSuggestion(message)
+                val reason = t.localizedMessage ?: "Unknown network error"
+                addMessageToChat("Chat request failed: $reason", false)
             }
         })
     }
@@ -626,6 +621,13 @@ class SymptomCheckerActivity : AppCompatActivity() {
     private fun addMessageToUi(message: String, isUserMessage: Boolean) {
         val textView = TextView(this)
         textView.text = message
+        textView.isSingleLine = false
+        textView.ellipsize = null
+        textView.maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            textView.breakStrategy = Layout.BREAK_STRATEGY_HIGH_QUALITY
+            textView.hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NORMAL
+        }
         textView.setPadding(32, 16, 32, 16)
         val layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -898,7 +900,6 @@ class SymptomCheckerActivity : AppCompatActivity() {
                     results[0]
                 }
             spokenText?.let {
-                binding.etSymptomInput.setText(it)
                 addMessageToChat(it, true)
                 handleVoiceTranscript(it)
             }

@@ -3,8 +3,8 @@ package com.example.mediconnect_ai.network
 import com.google.gson.annotations.SerializedName
 
 // ─── Legacy symptom checker (unchanged) ───────────────────────────────────────
-data class SymptomRequest(val symptom: String, val language: String = "English")
-data class SymptomResponse(val suggestion: String)
+//data class SymptomRequest(val symptom: String, val language: String = "English")
+//data class SymptomResponse(val suggestion: String)
 
 // ─── Triage (EWMA + Isolation Forest) ─────────────────────────────────────────
 

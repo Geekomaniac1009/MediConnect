@@ -227,15 +227,7 @@ def chat_endpoint():
 			},
 		)
 
-	tts_audio_b64 = None
-	try:
-		voice_agent = _safe_voice_agent()
-		tts_audio_b64 = voice_agent.text_to_speech_b64(response_text, language=language)
-	except Exception:
-		# TTS is optional; do not fail chat if unavailable.
-		tts_audio_b64 = None
-
-	return jsonify({"response": response_text, "language": language, "tts_audio_b64": tts_audio_b64})
+	return jsonify({"response": response_text, "language": language, "tts_audio_b64": None})
 
 
 @app.post("/api/voice/tts")

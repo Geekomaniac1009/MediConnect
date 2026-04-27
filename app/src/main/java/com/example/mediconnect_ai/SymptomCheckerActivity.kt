@@ -448,15 +448,14 @@ class SymptomCheckerActivity : AppCompatActivity() {
                         addMessageToChat("Detected vitals recording. Starting guided flow.", false)
                         requestGuidedPrompt()
                     }
-                    "ask_question", "check_patient" -> answerVoiceQuestion(transcript)
-                    "report_symptom" -> handleAssistantQuery(transcript)
-                    else -> getChatResponse(transcript)
+                    "ask_question", "check_patient", "report_symptom" -> answerVoiceQuestion(transcript)
+                    else -> answerVoiceQuestion(transcript)
                 }
             }
 
             override fun onFailure(call: Call<IntentResponse>, t: Throwable) {
                 removeLastChatBubbleIfPresent()
-                getChatResponse(transcript)
+                answerVoiceQuestion(transcript)
             }
         })
     }

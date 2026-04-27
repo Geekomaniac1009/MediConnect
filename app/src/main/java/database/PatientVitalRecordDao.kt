@@ -37,4 +37,13 @@ interface PatientVitalRecordDao {
         patientId: String,
         limit: Int = 10,
     ): List<PatientVitalRecord>
+
+    @Query(
+        """
+        SELECT * FROM patient_vitals_table
+        WHERE patientId = :patientId
+        ORDER BY recordedAt DESC
+        """
+    )
+    suspend fun getAllForPatient(patientId: String): List<PatientVitalRecord>
 }

@@ -57,7 +57,8 @@
                 <!-- 2. NEW: Smart Route Map Card -->
                 <com.google.android.material.card.MaterialCardView
                     android:id="@+id/cardRouteMap"
-                    style="@style/DashboardCard">
+                    style="@style/DashboardCard"
+                    android:visibility="gone">
                     <LinearLayout style="@style/DashboardCardContent">
                         <ImageView
                             style="@style/DashboardCardIcon"

@@ -185,6 +185,14 @@
                 android:layout_height="wrap_content"
                 android:text="View Full Medical History"
                 style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_marginBottom="8dp"/>
+
+            <Button
+                android:id="@+id/btnViewVitalsHistory"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="View Vitals History"
+                style="@style/Widget.Material3.Button.OutlinedButton"
                 android:layout_marginBottom="16dp"/>
 
             <com.google.android.material.card.MaterialCardView

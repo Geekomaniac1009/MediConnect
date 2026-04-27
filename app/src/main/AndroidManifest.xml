@@ -222,6 +222,12 @@
             android:parentActivityName=".PatientDetailActivity" />
 
         <activity
+            android:name=".PatientVitalsHistoryActivity"
+            android:exported="false"
+            android:label="Vitals History"
+            android:parentActivityName=".PatientDetailActivity" />
+
+        <activity
             android:name=".ResourcesActivity"
             android:exported="false"
             android:label="Health Resources"

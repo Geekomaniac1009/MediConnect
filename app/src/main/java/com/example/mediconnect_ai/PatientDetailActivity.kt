@@ -71,6 +71,12 @@ class PatientDetailActivity : BaseActivity() {
             startActivity(intent)
         }
 
+        binding.btnViewVitalsHistory.setOnClickListener {
+            val intent = Intent(this, PatientVitalsHistoryActivity::class.java)
+            intent.putExtra(PatientVitalsHistoryActivity.EXTRA_PATIENT_ID, patientId.toString())
+            startActivity(intent)
+        }
+
         // --- NEW: Log Symptoms Button ---
         val btnLogSymptoms = findViewById<Button>(R.id.btnLogSymptoms)
         btnLogSymptoms?.setOnClickListener {

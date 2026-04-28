@@ -142,7 +142,9 @@ class LLMExplainer:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not set in environment")
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("models/gemini-2.5-flash")
+        ## BINGUS
+        # self.model = genai.GenerativeModel("models/gemini-2.5-flash")
+        self.model = genai.GenerativeModel("models/gemini-3.1-flash-lite-preview")
 
     def _call(self, prompt: str, max_tokens: int = 1024) -> str:
         if genai is None:

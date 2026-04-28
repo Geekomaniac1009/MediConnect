@@ -135,7 +135,9 @@ class VoiceAgent:
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key and genai is not None:
             genai.configure(api_key=api_key)
-            self.llm = genai.GenerativeModel("models/gemini-2.5-flash")
+            #BINGUS
+            # self.llm = genai.GenerativeModel("models/gemini-2.5-flash")
+            self.llm = genai.GenerativeModel("models/gemini-3.1-flash-lite-preview")
         else:
             self.llm = None
 

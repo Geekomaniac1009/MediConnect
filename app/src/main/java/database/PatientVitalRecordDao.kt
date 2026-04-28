@@ -41,6 +41,18 @@ interface PatientVitalRecordDao {
     @Query(
         """
         SELECT * FROM patient_vitals_table
+        WHERE patientId = :patientId AND category = :category
+        ORDER BY recordedAt DESC
+        """
+    )
+    suspend fun getAllForPatientCategory(
+        patientId: String,
+        category: String,
+    ): List<PatientVitalRecord>
+
+    @Query(
+        """
+        SELECT * FROM patient_vitals_table
         WHERE patientId = :patientId
         ORDER BY recordedAt DESC
         """

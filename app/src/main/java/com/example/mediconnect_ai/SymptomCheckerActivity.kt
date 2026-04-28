@@ -19,6 +19,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -87,6 +88,15 @@ class SymptomCheckerActivity : AppCompatActivity() {
         // Load previous chat history when the screen opens
         loadChatHistory()
 
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    clearChatHistoryAndExit()
+                }
+            }
+        )
+
         binding.btnSendSymptom.setOnClickListener {
             val symptomText = binding.etSymptomInput.text.toString()
             if (symptomText.isNotBlank()) {
@@ -143,6 +153,16 @@ class SymptomCheckerActivity : AppCompatActivity() {
     private fun addMessageToChat(message: String, isUserMessage: Boolean) {
         addMessageToUi(message, isUserMessage)
         saveMessageToDatabase(message, isUserMessage)
+    }
+
+    private fun clearChatHistoryAndExit() {
+        lifecycleScope.launch {
+            chatMessageDao.clearAllMessages()
+            binding.chatContainer.removeAllViews()
+            mediaPlayer?.release()
+            mediaPlayer = null
+            finish()
+        }
     }
 
     private fun handleAssistantQuery(message: String) {
